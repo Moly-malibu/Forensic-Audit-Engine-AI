@@ -226,44 +226,183 @@ tab1, tab2, tab3, tab4 = st.tabs(["Tax Fraud Audit", "Credit Card Fraud", "SEC F
 # ========================================
 # TAB 1 – TAX FRAUD 
 # ========================================
- 
 with tab1:
     st.header("Tax Return Fraud Detection")
-    uploaded = st.file_uploader("Upload CSV (revenue, expenses, deductions, industry)", type="csv")
-    df_tax = pd.read_csv(uploaded) if uploaded else load_sample_tax()
-    if not uploaded:
-        st.info("Using sample dataset: 60 returns (7 simulated fraud cases)")
 
-    if st.button("Run Full Audit", type="primary", use_container_width=True):
-        with st.spinner("Running Z-Score + Benford + ML Analysis..."):
-            df_tax = zscore_analysis(df_tax)
-            ben_fig, ben_p = benford_test(df_tax["expenses"])
+    uploaded = st.file_uploader(
+        "Upload CSV (revenue, expenses, deductions, industry)",
+        type="csv",
+        help="The app automatically detects common column names like Sales, Costs, COGS, Sector, NAICS, etc."
+    )
+
+    # ===================================================================
+    # 1. PREPARE THE DATA (uploaded or sample)
+    # ===================================================================
+    if uploaded:
+        df_original = pd.read_csv(uploaded)
+
+        # Normalize column names
+        df_original.columns = [
+            col.strip().lower()
+               .replace(' ', '_')
+               .replace('-', '_')
+               .replace('__', '_')
+               .replace('.', '_')
+            for col in df_original.columns
+        ]
+
+        # Super aggressive auto-detection
+        expense_variations = ['expense', 'expenses', 'total_expenses', 'total_expense', 'operating_expenses', 'cogs', 'cost_of_goods', 'costs', 'expenditures', 'operating_cost']
+        revenue_variations = ['revenue', 'revenues', 'sales', 'gross_sales', 'gross_receipts', 'gross_income', 'total_income', 'turnover']
+        deduction_variations = ['deduction', 'deductions', 'total_deductions', 'itemized_deductions']
+        industry_variations = ['industry', 'sector', 'business_type', 'business_activity', 'principal_business', 'naics', 'sic', 'category']
+
+        rename_map = {}
+        for col in df_original.columns:
+            if any(var in col for var in expense_variations):
+                rename_map[col] = 'expenses'
+            elif any(var in col for var in revenue_variations):
+                rename_map[col] = 'revenue'
+            elif any(var in col for var in deduction_variations):
+                rename_map[col] = 'deductions'
+            elif any(var in col for var in industry_variations):
+                rename_map[col] = 'industry'
+            if any(x in col for x in ['tax_id', 'taxid', 'tin', 'ein', 'ssn', 'id', 'case_id', 'return_id']):
+                rename_map[col] = 'tax_id'
+
+        df_original = df_original.rename(columns=rename_map)
+
+        # Show mapping UI
+        st.info("Auto-detected columns – you can adjust if needed")
+        options = ['(select column)'] + list(df_original.columns)
+
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            revenue_col = st.selectbox("Revenue / Sales", options, index=options.index('revenue') if 'revenue' in options else 0)
+        with col2:
+            expenses_col = st.selectbox("Expenses / Costs", options, index=options.index('expenses') if 'expenses' in options else 0)
+        with col3:
+            deductions_col = st.selectbox("Deductions", options, index=options.index('deductions') if 'deductions' in options else 0)
+        with col4:
+            industry_col = st.selectbox("Industry / Sector", options, index=options.index('industry') if 'industry' in options else 0)
+
+        tax_id_col = st.selectbox("Tax ID (optional)", ['None'] + list(df_original.columns), index=0)
+
+        df_to_analyze = df_original.copy()
+
+    else:
+        # No file → use sample
+        df_to_analyze = load_sample_tax()
+        st.info("No file uploaded → Using sample dataset (60 returns, 7 simulated fraud cases)")
+
+        # For sample data we assume columns are already correct
+        revenue_col = 'revenue'
+        expenses_col = 'expenses'
+        deductions_col = 'deductions'
+        industry_col = 'industry'
+        tax_id_col = 'tax_id' if 'tax_id' in df_to_analyze.columns else 'None'
+
+    # ===================================================================
+    # 2. SINGLE BUTTON FOR EVERYTHING (uploaded or sample)
+    # ===================================================================
+    if st.button("Run Full Fraud Audit", type="primary", use_container_width=True, key="master_run_button"):
+
+        with st.spinner("Running Z-Score + Benford's Law + Machine Learning analysis..."):
+
+            # Final clean dataframe
+            df = df_to_analyze.copy()
+
+            # Apply manual mapping only if user uploaded a file
+            if uploaded:
+                if '(select column)' in [revenue_col, expenses_col, deductions_col, industry_col]:
+                    st.error("Please select all four columns.")
+                    st.stop()
+
+                df['revenue'] = df_to_analyze[revenue_col]
+                df['expenses'] = df_to_analyze[expenses_col]
+                df['deductions'] = df_to_analyze[deductions_col]
+                df['industry'] = df_to_analyze[industry_col]
+
+                if tax_id_col != 'None':
+                    df['tax_id'] = df_to_analyze[tax_id_col]
+                else:
+                    df['tax_id'] = range(1, len(df) + 1)
+
+            # Ensure numeric types
+            numeric_cols = ['revenue', 'expenses', 'deductions']
+            df[numeric_cols] = df[numeric_cols].apply(pd.to_numeric, errors='coerce')
+
+            # === NEW SAFETY CHECK (this prevents the IsolationForest error forever) ===
+            if df[numeric_cols].isna().all().all():
+                st.error("All values in the selected revenue, expenses, and deductions columns are non-numeric or empty. "
+                         "Please check your CSV and select columns that contain numbers only.")
+                st.stop()
+
+            df = df.dropna(subset=numeric_cols).reset_index(drop=True)
+
+            if len(df) == 0:
+                st.error("No valid numeric rows found after cleaning. "
+                         "The selected revenue, expenses, and deductions columns contain only text, empty cells, or invalid numbers. "
+                         "Please fix the file or choose different columns.")
+                st.stop()
+
+            if len(df) == 1:
+                st.warning("Only 1 valid row found – analysis will run but results may not be meaningful (IsolationForest needs multiple rows).")
+
+            # YOUR ANALYSIS (exactly as you had it – 100% unchanged)
+            df = zscore_analysis(df)
+
+            ben_fig, ben_p = benford_test(df["expenses"])
+
             model = get_ml_model()
-            X = df_tax[["ratio", "deductions", "revenue", "z_score", "expenses"]]
-            df_tax["ml_score"] = (1 - model.decision_function(X)) * 100
-            df_tax["fraud_score"] = (df_tax["ml_score"]*0.52 + df_tax["z_risk"]*0.28 + (60 if ben_p < 0.05 else 0)*0.2).clip(0, 100)
-            df_tax["risk"] = pd.cut(df_tax["fraud_score"], [0, 45, 72, 100], labels=["Low", "Medium", "High"])
-            high = df_tax[df_tax["risk"] == "High"]
+            X = df[["ratio", "deductions", "revenue", "z_score", "expenses"]]
+            
+            # Extra safety (in case something weird happens)
+            if len(X) == 0:
+                st.error("Feature matrix is empty – cannot run ML model.")
+                st.stop()
 
-            st.success(f"Analysis Complete → {len(high)} High-Risk Returns Found")
+            df["ml_score"] = (1 - model.decision_function(X)) * 100
+
+            df["fraud_score"] = (
+                df["ml_score"] * 0.52 +
+                df["z_risk"] * 0.28 +
+                (60 if ben_p < 0.05 else 0) * 0.20
+            ).clip(0, 100)
+
+            df["risk"] = pd.cut(df["fraud_score"], bins=[0, 45, 72, 100], labels=["Low", "Medium", "High"])
+
+            high = df[df["risk"] == "High"]
+
+            st.success(f"Analysis Complete → {len(high)} High-Risk Returns Detected!")
+
+            # Charts
             c1, c2 = st.columns([3, 2])
             with c1:
-                fig = px.scatter(df_tax, x="revenue", y="ratio", color="risk", size="fraud_score",
-                                 hover_data=["tax_id"], color_discrete_map={"Low":"#2ecc71", "Medium":"#f1c40f", "High":"#e74c3c"})
+                fig = px.scatter(df, x="revenue", y="ratio", color="risk", size="fraud_score",
+                                hover_data=["tax_id"],
+                                color_discrete_map={"Low": "#2ecc71", "Medium": "#f1c40f", "High": "#e74c3c"})
                 fig.update_layout(title="Expense-to-Revenue Ratio by Risk Level")
                 st.plotly_chart(fig, use_container_width=True)
-            with c2:
-                if ben_fig: st.pyplot(ben_fig)
 
+            with c2:
+                if ben_fig:
+                    st.pyplot(ben_fig)
+
+            # High-risk table + PDF
             if not high.empty:
-                st.markdown("### High-Risk Returns")
+                st.markdown("### 🚨 High-Risk Tax Returns")
                 st.dataframe(high[["tax_id", "industry", "ratio", "z_score", "ml_score", "fraud_score"]].round(2))
+
                 st.download_button(
-                    "Download IRS 886-A Report (PDF)",
+                    "📄 Download IRS 886-A Explanation of Items (PDF)",
                     data=generate_tax_pdf(high),
                     file_name=f"FraudGuard_Report_{datetime.now().strftime('%Y%m%d')}.pdf",
                     mime="application/pdf"
                 )
+            else:
+                st.success("No high-risk returns found – all clean!")
+ 
                 
 # ========================================
 # TAB 2 – CREDIT CARD FRAUD
@@ -394,7 +533,7 @@ with tab4:
         st.dataframe(suspicious[["txn_id","account","amount_usd","country","aml_risk"]].round(2))
 
 st.caption("FraudGuard AI © 2025 – The most powerful open-source financial forensics tool | California, USA")
-st.balloons()
+# st.balloons()
 
 
 # import streamlit as st

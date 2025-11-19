@@ -4,7 +4,7 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 
-# Mock data generator (replace with your own function if you have it)
+# Mock data generator
 def generate_insurance_data():
     np.random.seed(42)
     n = 500
@@ -25,7 +25,6 @@ def train_models(train_df, val_df, test_df):
     features = ["age", "vehicle_value", "claim_amount", "claim_to_value"]
     rf = RandomForestClassifier(n_estimators=10, random_state=42)
     rf.fit(train_df[features], train_df["is_fraud"])
-    # Replicate your tuple unpacking order: (None, None, model, None, features)
     return None, None, rf, None, features
 
 def show_risk_gauge_plotly(prob, risk):
